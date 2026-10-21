@@ -39,8 +39,22 @@ keyshelf copy github                # clipboard, if xclip is installed
 printf %s "$pw" | keyshelf set github password
 keyshelf edit github                # $EDITOR on that account's secrets
 keyshelf add mail --name 'Mail' --username me --fields password,token
-keyshelf doctor                     # key perms, missing secrets, plaintext leftovers
+keyshelf totp github                # current authenticator code (TOTP)
+keyshelf totp github -l             # same, with seconds left
+keyshelf doctor                     # key perms, missing secrets, stale mirror
+keyshelf materialize                # rebuild the plaintext mirror in ~/.secrets
 ```
+
+`totp` works on any account with a `totp_secret` field, so I can keep authenticator
+seeds in the same encrypted vault instead of a phone app. Standard RFC 6238, 6 digits,
+30 seconds.
+
+### The plaintext mirror
+
+Some things insist on files: `bogo-secret`, the Telegram bot token, the phone API token.
+`materialize` writes those few files into `~/.secrets` (mode 600) from the vault. They
+are *derived* — the vault is the source of truth, and `doctor` complains when the mirror
+is older than it.
 
 `KEYSHELF_DATA` points the tool at another shelf directory (the test does this).
 `SOPS_AGE_KEY_FILE` overrides the key path.
