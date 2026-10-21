@@ -7,12 +7,17 @@ vault.sops.json, encrypted with age + sops; only my private age key can open it.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import json
+import struct
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -149,6 +154,25 @@ def cmd_reveal(a) -> None:
     else:
         for f, v in values.items():
             print(f"{f}={v}")
+
+
+def totp_code(secret: str, period: int = 30, digits: int = 6) -> tuple[str, int]:
+    """RFC 6238 TOTP from a base32 secret. Returns (code, seconds left)."""
+    raw = base64.b32decode(secret.upper().replace(" ", "").rstrip("=") + "=" * (-len(secret) % 8))
+    counter = int(time.time() // period)
+    digest = hmac.new(raw, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    value = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return str(value % (10 ** digits)).zfill(digits), period - int(time.time() % period)
+
+
+def cmd_totp(a) -> None:
+    acc = find_account(load_inventory(), a.id)
+    secret = load_vault().get(make_key(acc, "totp_secret"))
+    if secret is None:
+        die(f"{acc['id']} has no totp_secret")
+    code, left = totp_code(secret)
+    print(f"{code}  ({left}s left)" if a.show_left else code)
 
 
 def cmd_copy(a) -> None:
@@ -365,6 +389,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("id")
     s.add_argument("field", nargs="?")
     s.set_defaults(func=cmd_reveal)
+
+    s = sub.add_parser("totp", help="current TOTP code")
+    s.add_argument("id")
+    s.add_argument("-l", "--show-left", action="store_true")
+    s.set_defaults(func=cmd_totp)
 
     s = sub.add_parser("copy", help="copy a secret to the clipboard")
     s.add_argument("id")
