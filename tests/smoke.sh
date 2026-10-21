@@ -18,8 +18,8 @@ k="$tmp/keyshelf"
 "$k" init >/dev/null
 "$k" set github password --value 's3cret with spaces'
 [ "$("$k" reveal github password)" = 's3cret with spaces' ] || exit 1
-[ "$("$k" reveal github --field password 2>/dev/null || "$k" reveal github | grep '^password=')" ] || true
-"$k" list | grep -q 'secrets 1/2'
+"$k" reveal github password | grep -qx 's3cret with spaces'
+"$k" list | grep -q 'secrets 1/4'
 "$k" add newthing --name 'New thing' --username me --fields token,note >/dev/null
 "$k" set newthing token --value tok
 "$k" show newthing | grep -q 'token (present)'
