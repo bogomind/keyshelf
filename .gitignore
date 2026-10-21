@@ -2,3 +2,6 @@
 vault.sops.tmp
 *.tmp
 __pycache__/
+inventory.json
+vault.sops.json
+.sops.yaml

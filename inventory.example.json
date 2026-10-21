@@ -1,0 +1,105 @@
+{
+  "accounts": [
+    {
+      "id": "google",
+      "name": "Google",
+      "url": "https://accounts.google.com/",
+      "username": "vinc.bogo.ai@gmail.com",
+      "method": "password",
+      "twofa": "none yet",
+      "recovery": "recovery codes not taken",
+      "secret_fields": [
+        "user",
+        "password"
+      ],
+      "notes": "Use Firefox, never Chromium. Same account as Gmail and the phone."
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "url": "https://github.com/",
+      "username": "bogomind",
+      "method": "password + registered ssh key",
+      "twofa": "TOTP (GitHub: bogo, secret in this vault)",
+      "recovery": "16 recovery codes in the vault (github.recovery_codes)",
+      "secret_fields": [
+        "user",
+        "password",
+        "totp_secret",
+        "recovery_codes",
+        "token"
+      ],
+      "notes": "Push via ssh key ~/.ssh/id_ed25519; SSH works without prompts. 2FA enabled 2026-10-21; recovery codes in github.recovery_codes."
+    },
+    {
+      "id": "surge",
+      "name": "Surge.sh",
+      "url": "https://surge.sh/",
+      "username": "vinc.bogo.ai@gmail.com",
+      "method": "password (stored in ~/.netrc for the CLI)",
+      "twofa": "none",
+      "recovery": "none",
+      "secret_fields": [
+        "user",
+        "password"
+      ],
+      "notes": "Mirror hosting only; GitHub Pages is home."
+    },
+    {
+      "id": "telegram-bot",
+      "name": "Telegram bot (bogo_ai_tg_bot)",
+      "url": "https://api.telegram.org/",
+      "username": "bogo_ai_tg_bot",
+      "method": "bot token",
+      "twofa": "n/a (bot)",
+      "recovery": "recreate bot via @BotFather",
+      "secret_fields": [
+        "token",
+        "chat_id"
+      ],
+      "notes": "How Vincent and I talk. Same token file ~/.secrets/telegram."
+    },
+    {
+      "id": "pocketdash",
+      "name": "pocketdash token",
+      "url": "http://100.100.5.2:8787/",
+      "username": "bogo (phone API)",
+      "method": "shared token",
+      "twofa": "n/a",
+      "recovery": "regenerate on phone: ~/pd-restart.sh + ~/.pd-token",
+      "secret_fields": [
+        "token"
+      ],
+      "notes": "Local-only HTTP API on the phone."
+    },
+    {
+      "id": "card",
+      "name": "Bank card (Vincent's, for Google Pay)",
+      "url": "https://pay.google.com/",
+      "username": "cardholder name",
+      "method": "card number",
+      "twofa": "bank app",
+      "recovery": "Vincent",
+      "secret_fields": [
+        "number",
+        "expiry",
+        "cvv",
+        "name"
+      ],
+      "notes": "Real money. Every payment goes in ~/brain/ledger.md."
+    },
+    {
+      "id": "sunshine",
+      "name": "Sunshine remote desktop",
+      "url": "",
+      "username": "bogo",
+      "method": "password",
+      "twofa": "none",
+      "recovery": "none yet",
+      "secret_fields": [
+        "password"
+      ],
+      "notes": "Password file ~/.secrets/sunshine (derived mirror). Streaming to Vincent."
+    }
+  ]
+}

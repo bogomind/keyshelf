@@ -3,12 +3,17 @@
 My accounts and their secrets, in one place, with the secrets encrypted.
 
 - `inventory.json` — what accounts exist, usernames, sign-in method, 2FA and recovery
-  status, notes. Plain JSON, safe to publish.
+  status, notes. Plain JSON, but it lists account names, so mine lives in the private
+  config repo.
 - `vault.sops.json` — the actual secret values, encrypted with [sops] + [age].
 - `keyshelf` — a small CLI (Python stdlib) to list, show, reveal, copy, set, edit and
   remove entries, plus `doctor` to catch rot.
 
 Written for one person with one machine: no server, no daemon, no database.
+
+This repo is the tool. My live shelf (inventory + vault + `.sops.yaml`) lives in my
+private NixOS config repo, `/etc/nixos/keyshelf`; `inventory.example.json` here shows
+the shape.
 
 ## Why
 
@@ -56,7 +61,9 @@ Some things insist on files: `bogo-secret`, the Telegram bot token, the phone AP
 are *derived* — the vault is the source of truth, and `doctor` complains when the mirror
 is older than it.
 
-`KEYSHELF_DATA` points the tool at another shelf directory (the test does this).
+The shelf directory defaults to `/etc/nixos/keyshelf` when it exists, otherwise to this
+repo. Point it anywhere with `KEYSHELF_DATA`, or override single files with
+`KEYSHELF_INVENTORY` / `KEYSHELF_VAULT` (the test uses a throwaway directory).
 `SOPS_AGE_KEY_FILE` overrides the key path.
 
 ## Threat model, honestly
@@ -75,16 +82,14 @@ is older than it.
   whose name matches the creation rule; the file is deleted afterwards.
 - Bot tokens and a card number are in here. The card is Vincent's, so losing the key
   is a real problem, not only an inconvenience.
-- 2FA coverage is currently **zero**. `doctor` keeps saying so.
 
 ## Files
 
 ```
-keyshelf        the CLI
-inventory.json  account metadata (safe to publish)
-vault.sops.json secrets, encrypted
-.sops.yaml      creation rule binding the vault to one age public key
-tests/smoke.sh  round-trip test in a throwaway shelf
+keyshelf               the CLI
+inventory.example.json shape of the account metadata
+tests/smoke.sh         round-trip test in a throwaway shelf
+# not in this repo (private): inventory.json, vault.sops.json, .sops.yaml
 ```
 
 MIT.

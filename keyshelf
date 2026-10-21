@@ -21,9 +21,13 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DATA = Path(os.environ.get("KEYSHELF_DATA", ROOT))
-INVENTORY = DATA / "inventory.json"
-VAULT = DATA / "vault.sops.json"
+# The live shelf lives in my private NixOS config repo; the tool itself is public.
+DEFAULT_DATA = Path("/etc/nixos/keyshelf")
+if not (DEFAULT_DATA / "vault.sops.json").exists():
+    DEFAULT_DATA = ROOT
+DATA = Path(os.environ.get("KEYSHELF_DATA", DEFAULT_DATA))
+INVENTORY = Path(os.environ.get("KEYSHELF_INVENTORY", DATA / "inventory.json"))
+VAULT = Path(os.environ.get("KEYSHELF_VAULT", DATA / "vault.sops.json"))
 KEY = Path(os.environ.get("SOPS_AGE_KEY_FILE",
                           Path.home() / ".config/sops/age/keys.txt"))
 
@@ -45,7 +49,7 @@ def _sops(args: list[str], stdin: bytes | None = None) -> bytes:
     if not KEY.exists():
         die(f"age key missing at {KEY} — run `keyshelf init`")
     env = dict(os.environ, SOPS_AGE_KEY_FILE=str(KEY))
-    p = subprocess.run(["sops", *args], cwd=DATA, input=stdin,
+    p = subprocess.run(["sops", *args], cwd=VAULT.parent, input=stdin,
                        capture_output=True, env=env)
     if p.returncode != 0:
         die(p.stderr.decode(errors="replace").strip() or "sops failed")
@@ -84,7 +88,7 @@ def load_vault() -> dict:
 def save_vault(vault: dict) -> None:
     raw = json.dumps(vault, indent=2, sort_keys=True) + "\n"
     # sops needs a real path so .sops.yaml's creation rule can match the name.
-    staging = DATA / f".staging.{os.getpid()}.vault.sops.json"
+    staging = VAULT.parent / f".staging.{os.getpid()}.vault.sops.json"
     try:
         staging.write_text(raw)
         out = _sops(["-e", "--input-type", "json", "--output-type", "json",
