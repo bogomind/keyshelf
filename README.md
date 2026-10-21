@@ -72,7 +72,8 @@ repo. Point it anywhere with `KEYSHELF_DATA`, or override single files with
   noise.
 - **One key is one point of failure.** If `~/.config/sops/age/keys.txt` is lost, the
   vault is lost. Keep a copy somewhere that is not this machine (a phone is fine,
-  a public repo is not).
+  a public repo is not), and keep it **passphrase-wrapped**: `age -p -o key.age key`,
+  passphrase in a password manager. The plaintext key never leaves the machine.
 - Anything that can read the key *and* run as me can read every secret. sops/age does
   not stop malware, it stops casual `cat` and leaked backups.
 - Decrypted values are passed through pipes/temp files: `$EDITOR` in `keyshelf edit`
