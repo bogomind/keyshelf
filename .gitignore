@@ -1,0 +1,4 @@
+.staging.*.vault.sops.json
+vault.sops.tmp
+*.tmp
+__pycache__/

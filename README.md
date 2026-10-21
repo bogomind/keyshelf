@@ -1,0 +1,79 @@
+# keyshelf
+
+My accounts and their secrets, in one place, with the secrets encrypted.
+
+- `inventory.json` — what accounts exist, usernames, sign-in method, 2FA and recovery
+  status, notes. Plain JSON, safe to publish.
+- `vault.sops.json` — the actual secret values, encrypted with [sops] + [age].
+- `keyshelf` — a small CLI (Python stdlib) to list, show, reveal, copy, set, edit and
+  remove entries, plus `doctor` to catch rot.
+
+Written for one person with one machine: no server, no daemon, no database.
+
+## Why
+
+Plain files in `~/.secrets` work until there are ten of them and nobody remembers which
+account has which recovery path. This replaces "a folder of 600-mode files" with a
+readable inventory plus one encrypted blob, so the *map* is legible and the *values*
+are not lying around.
+
+## Setup
+
+```sh
+sudo nixos-rebuild ...          # or: nix shell nixpkgs#sops nixpkgs#age nixpkgs#jq
+./keyshelf init                 # creates ~/.config/sops/age/keys.txt
+# put the printed public key into .sops.yaml (age:)
+```
+
+`init` refuses to overwrite an existing key; `--force` replaces it (old vault becomes
+unreadable).
+
+## Use
+
+```sh
+keyshelf list                       # accounts, how many secrets, 2FA state
+keyshelf show github                # metadata only
+keyshelf reveal github password     # print one secret
+keyshelf reveal github              # print all fields as field=value
+keyshelf copy github                # clipboard, if xclip is installed
+printf %s "$pw" | keyshelf set github password
+keyshelf edit github                # $EDITOR on that account's secrets
+keyshelf add mail --name 'Mail' --username me --fields password,token
+keyshelf doctor                     # key perms, missing secrets, plaintext leftovers
+```
+
+`KEYSHELF_DATA` points the tool at another shelf directory (the test does this).
+`SOPS_AGE_KEY_FILE` overrides the key path.
+
+## Threat model, honestly
+
+- Encrypted at rest. The repo can be public; without the age private key the vault is
+  noise.
+- **One key is one point of failure.** If `~/.config/sops/age/keys.txt` is lost, the
+  vault is lost. Keep a copy somewhere that is not this machine (a phone is fine,
+  a public repo is not).
+- Anything that can read the key *and* run as me can read every secret. sops/age does
+  not stop malware, it stops casual `cat` and leaked backups.
+- Decrypted values are passed through pipes/temp files: `$EDITOR` in `keyshelf edit`
+  writes plaintext to a 600 temp file in `/tmp` while editing, and `xclip` leaves the
+  clipboard readable by any process of mine.
+- Secrets reach `sops` through a short-lived staging file because sops needs a path
+  whose name matches the creation rule; the file is deleted afterwards.
+- Bot tokens and a card number are in here. The card is Vincent's, so losing the key
+  is a real problem, not only an inconvenience.
+- 2FA coverage is currently **zero**. `doctor` keeps saying so.
+
+## Files
+
+```
+keyshelf        the CLI
+inventory.json  account metadata (safe to publish)
+vault.sops.json secrets, encrypted
+.sops.yaml      creation rule binding the vault to one age public key
+tests/smoke.sh  round-trip test in a throwaway shelf
+```
+
+MIT.
+
+[sops]: https://getsops.io/
+[age]: https://age-encryption.org/

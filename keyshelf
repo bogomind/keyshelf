@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""keyshelf — my accounts and their secrets in one encrypted shelf.
+
+Inventory (account metadata) is plain JSON and safe to publish. Secrets live in
+vault.sops.json, encrypted with age + sops; only my private age key can open it.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+DATA = Path(os.environ.get("KEYSHELF_DATA", ROOT))
+INVENTORY = DATA / "inventory.json"
+VAULT = DATA / "vault.sops.json"
+KEY = Path(os.environ.get("SOPS_AGE_KEY_FILE",
+                          Path.home() / ".config/sops/age/keys.txt"))
+
+
+class Fail(Exception):
+    pass
+
+
+def die(msg: str, code: int = 1) -> "NoReturn":
+    print(f"keyshelf: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+# ---------- sops plumbing ----------
+
+def _sops(args: list[str], stdin: bytes | None = None) -> bytes:
+    if shutil.which("sops") is None:
+        die("sops is not installed")
+    if not KEY.exists():
+        die(f"age key missing at {KEY} — run `keyshelf init`")
+    env = dict(os.environ, SOPS_AGE_KEY_FILE=str(KEY))
+    p = subprocess.run(["sops", *args], cwd=DATA, input=stdin,
+                       capture_output=True, env=env)
+    if p.returncode != 0:
+        die(p.stderr.decode(errors="replace").strip() or "sops failed")
+    return p.stdout
+
+
+def load_inventory() -> list[dict]:
+    try:
+        data = json.loads(INVENTORY.read_text())
+    except FileNotFoundError:
+        die(f"no inventory at {INVENTORY}")
+    except json.JSONDecodeError as e:
+        die(f"inventory is not valid JSON: {e}")
+    return data.get("accounts", [])
+
+
+def find_account(accounts: list[dict], ident: str) -> dict:
+    for a in accounts:
+        if a["id"] == ident:
+            return a
+    matches = [a for a in accounts if ident.lower() in a["name"].lower()]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        die(f"no account matching {ident!r}")
+    die(f"{ident!r} is ambiguous: {', '.join(a['id'] for a in matches)}")
+
+
+def load_vault() -> dict:
+    if not VAULT.exists():
+        return {}
+    return json.loads(_sops(["-d", "--input-type", "json",
+                            "--output-type", "json", str(VAULT)]))
+
+
+def save_vault(vault: dict) -> None:
+    raw = json.dumps(vault, indent=2, sort_keys=True) + "\n"
+    # sops needs a real path so .sops.yaml's creation rule can match the name.
+    staging = DATA / f".staging.{os.getpid()}.vault.sops.json"
+    try:
+        staging.write_text(raw)
+        out = _sops(["-e", "--input-type", "json", "--output-type", "json",
+                     str(staging)])
+    finally:
+        staging.unlink(missing_ok=True)
+    tmp = VAULT.with_suffix(".tmp")
+    tmp.write_bytes(out)
+    tmp.replace(VAULT)
+
+
+def split_key(key: str) -> tuple[str, str]:
+    account, _, field = key.partition(".")
+    return account, field
+
+
+def make_key(account: dict, field: str) -> str:
+    if field not in account.get("secret_fields", []):
+        die(f"{account['id']} has no secret field {field!r} "
+            f"(known: {', '.join(account.get('secret_fields', [])) or 'none'})")
+    return f"{account['id']}.{field}"
+
+
+# ---------- commands ----------
+
+def cmd_list(a) -> None:
+    accounts = load_inventory()
+    if not accounts:
+        print("(empty shelf)")
+        return
+    have = set(load_vault()) if VAULT.exists() else set()
+    for acc in sorted(accounts, key=lambda x: x["id"]):
+        filled = sum(f"{acc['id']}.{f}" in have for f in acc.get("secret_fields", []))
+        total = len(acc.get("secret_fields", []))
+        print(f"{acc['id']:<16} {acc['username']:<30} "
+              f"secrets {filled}/{total}  2FA: {acc.get('twofa', '?')}")
+
+
+def cmd_show(a) -> None:
+    acc = find_account(load_inventory(), a.id)
+    print(f"id:       {acc['id']}")
+    print(f"name:     {acc['name']}")
+    print(f"url:      {acc.get('url', '')}")
+    print(f"username: {acc['username']}")
+    print(f"method:   {acc.get('method', '')}")
+    print(f"2FA:      {acc.get('twofa', '')}")
+    print(f"recovery: {acc.get('recovery', '')}")
+    if acc.get("notes"):
+        print(f"notes:    {acc['notes']}")
+    have = load_vault() if VAULT.exists() else {}
+    for f in acc.get("secret_fields", []):
+        print(f"secret:   {f} ({'present' if f'{acc["id"]}.{f}' in have else 'MISSING'})")
+
+
+def cmd_reveal(a) -> None:
+    acc = find_account(load_inventory(), a.id)
+    vault = load_vault()
+    fields = [a.field] if a.field else acc.get("secret_fields", [])
+    values = {}
+    for f in fields:
+        key = make_key(acc, f)
+        if key not in vault:
+            die(f"missing secret {key}")
+        values[f] = vault[key]
+    if a.field:
+        print(values[a.field])
+    else:
+        for f, v in values.items():
+            print(f"{f}={v}")
+
+
+def cmd_copy(a) -> None:
+    acc = find_account(load_inventory(), a.id)
+    field = a.field or ("password" if "password" in acc.get("secret_fields", [])
+                        else acc["secret_fields"][0])
+    value = load_vault().get(make_key(acc, field))
+    if value is None:
+        die(f"missing secret {acc['id']}.{field}")
+    subprocess.run(["xclip", "-selection", "clipboard"], input=value.encode(),
+                   check=True)
+    print(f"copied {acc['id']}.{field} to clipboard (15s timeout)")
+
+
+def _read_value(a) -> str:
+    if a.value is not None:
+        return a.value
+    if sys.stdin.isatty():
+        print("value (echoed; end with Ctrl-D):", file=sys.stderr)
+    v = sys.stdin.read().rstrip("\n")
+    if not v:
+        die("empty value")
+    return v
+
+
+def cmd_set(a) -> None:
+    acc = find_account(load_inventory(), a.id)
+    value = _read_value(a)
+    vault = load_vault()
+    vault[make_key(acc, a.field)] = value
+    save_vault(vault)
+    print(f"stored {acc['id']}.{a.field}")
+
+
+def cmd_unset(a) -> None:
+    acc = find_account(load_inventory(), a.id)
+    vault = load_vault()
+    key = make_key(acc, a.field)
+    if vault.pop(key, None) is None:
+        die(f"{key} is not set")
+    save_vault(vault)
+    print(f"removed {key}")
+
+
+def cmd_add(a) -> None:
+    accounts = load_inventory()
+    if any(x["id"] == a.id for x in accounts):
+        die(f"account {a.id!r} already exists")
+    fields = [f.strip() for f in a.fields.split(",") if f.strip()]
+    accounts.append({
+        "id": a.id, "name": a.name, "url": a.url or "",
+        "username": a.username, "method": a.method or "password",
+        "twofa": a.twofa or "none yet", "recovery": a.recovery or "none yet",
+        "secret_fields": fields, "notes": a.notes or "",
+    })
+    _save_inventory(accounts)
+    print(f"added {a.id} (secrets still empty: {', '.join(fields)})")
+
+
+def cmd_rm(a) -> None:
+    accounts = load_inventory()
+    acc = find_account(accounts, a.id)
+    if not a.yes:
+        print(f"remove {acc['id']} and its secrets? [y/N] ", end="", file=sys.stderr)
+        if input().strip().lower() not in ("y", "yes"):
+            return
+    accounts = [x for x in accounts if x["id"] != acc["id"]]
+    _save_inventory(accounts)
+    vault = load_vault()
+    removed = [k for k in vault if split_key(k)[0] == acc["id"]]
+    for k in removed:
+        del vault[k]
+    if removed:
+        save_vault(vault)
+    print(f"removed {acc['id']} ({len(removed)} secrets)")
+
+
+def _save_inventory(accounts: list[dict]) -> None:
+    tmp = INVENTORY.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"accounts": accounts}, indent=2) + "\n")
+    tmp.replace(INVENTORY)
+
+
+def cmd_edit(a) -> None:
+    acc = find_account(load_inventory(), a.id)
+    editor = os.environ.get("EDITOR", "nano")
+    vault = load_vault()
+    before = {k: v for k, v in vault.items() if split_key(k)[0] == acc["id"]}
+    fd, path = tempfile.mkstemp(suffix=".json")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(before, f, indent=2, sort_keys=True)
+            f.write("\n")
+        subprocess.run([editor, path], check=True)
+        after = json.loads(Path(path).read_text())
+    finally:
+        Path(path).unlink(missing_ok=True)
+    for k in list(vault):
+        if split_key(k)[0] == acc["id"]:
+            del vault[k]
+    for f, v in after.items():
+        vault[f if "." in f else f"{acc['id']}.{f}"] = v
+    save_vault(vault)
+    print(f"updated {acc['id']} ({len(after)} secrets)")
+
+
+def cmd_materialize(a) -> None:
+    """Write the legacy plaintext mirror under ~/.secrets for tools that need files."""
+    vault = load_vault()
+    out = Path(os.environ.get("KEYSHELF_SECRETS_DIR", Path.home() / ".secrets"))
+    out.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    def w(name: str, text: str) -> None:
+        path = out / name
+        path.write_text(text)
+        path.chmod(0o600)
+        print(f"wrote {path}")
+
+    def get(key: str) -> str:
+        if key not in vault:
+            die(f"missing {key}")
+        return vault[key]
+
+    w("google", f"{get('google.user')} {get('google.password')}\n")
+    w("bank_card", "\n".join(get(f"card.{f}")
+                              for f in ("number", "expiry", "cvv", "name")) + "\n")
+    w("github", f"{get('github.user')}\n{get('github.password')}\n")
+    w("pocketdash", get("pocketdash.token"))
+    w("sunshine", get("sunshine.password"))
+    w("telegram", json.dumps({"token": get("telegram-bot.token"),
+                              "chat_id": int(get("telegram-bot.chat_id"))}))
+    print("done — these files are a derived mirror, not the source of truth")
+
+
+def cmd_doctor(a) -> None:
+    problems = 0
+
+    def check(ok: bool, good: str, bad: str) -> None:
+        nonlocal problems
+        print(("ok   " if ok else "WARN ") + (good if ok else bad))
+        problems += 0 if ok else 1
+
+    check(KEY.exists(), f"age key at {KEY}",
+          f"age key missing at {KEY} — nothing can be decrypted")
+    if KEY.exists():
+        mode = KEY.stat().st_mode & 0o777
+        check(mode == 0o600, "age key mode 600", f"age key mode {oct(mode)} (want 600)")
+    try:
+        vault = load_vault()
+        check(True, "vault decrypts", "")
+    except SystemExit:
+        vault = {}
+        problems += 1
+    accounts = load_inventory()
+    known = {f"{a['id']}.{f}" for a in accounts for f in a.get("secret_fields", [])}
+    for key in sorted(set(vault) - known):
+        check(False, "", f"vault key {key} has no inventory entry")
+    missing = sorted(known - set(vault))
+    check(not missing, "every declared secret is present",
+          f"declared but missing: {', '.join(missing)}")
+    for acc in accounts:
+        check(acc.get("twofa") not in ("", "none", "none yet"),
+              f"{acc['id']} has 2FA", f"{acc['id']} has no 2FA")
+        check(acc.get("recovery") not in ("", "none", "none yet"),
+              f"{acc['id']} has a recovery path", f"{acc['id']} has no recovery path")
+    mirror = Path.home().joinpath(".secrets")
+    stale = []
+    if mirror.exists():
+        for p in mirror.iterdir():
+            if p.is_file() and p.stat().st_mtime < VAULT.stat().st_mtime:
+                stale.append(p.name)
+    check(not stale, "plaintext mirror is current",
+          f"mirror older than vault, run `keyshelf materialize`: {', '.join(sorted(stale))}")
+    registry = KEY.parent / "backup-locations.txt"
+    backups = [l for l in registry.read_text().splitlines() if l.strip()] if registry.exists() else []
+    check(len(backups) >= 1, f"age key backed up off this machine ({len(backups)} place(s))",
+          "age key has no off-machine backup — losing it loses the vault")
+    print(f"\n{problems} problem(s)" if problems else "\nall good")
+
+
+def cmd_init(a) -> None:
+    KEY.parent.mkdir(parents=True, exist_ok=True)
+    if KEY.exists() and not a.force:
+        print(f"key already exists at {KEY} (use --force to replace)")
+    else:
+        out = subprocess.run(["age-keygen", "-o", str(KEY)], capture_output=True,
+                             text=True, check=True)
+        KEY.chmod(0o600)
+        pub = [l for l in out.stderr.splitlines() if "public key" in l][-1].split()[-1]
+        print(f"created {KEY}\npublic key: {pub}")
+        print("put the public key into .sops.yaml (age:) before writing secrets")
+    if not VAULT.exists():
+        save_vault({})
+        print(f"created empty {VAULT.name}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="keyshelf", description=__doc__)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    i = sub.add_parser("init", help="create the age key")
+    i.add_argument("--force", action="store_true")
+    i.set_defaults(func=cmd_init)
+    sub.add_parser("list", help="list accounts").set_defaults(func=cmd_list)
+    sub.add_parser("doctor", help="check the shelf's health").set_defaults(func=cmd_doctor)
+    sub.add_parser("materialize", help="write the plaintext mirror in ~/.secrets").set_defaults(
+        func=cmd_materialize)
+
+    s = sub.add_parser("show", help="show one account's metadata")
+    s.add_argument("id")
+    s.set_defaults(func=cmd_show)
+
+    s = sub.add_parser("reveal", help="print secrets")
+    s.add_argument("id")
+    s.add_argument("field", nargs="?")
+    s.set_defaults(func=cmd_reveal)
+
+    s = sub.add_parser("copy", help="copy a secret to the clipboard")
+    s.add_argument("id")
+    s.add_argument("field", nargs="?")
+    s.set_defaults(func=cmd_copy)
+
+    s = sub.add_parser("set", help="store a secret (value on stdin or --value)")
+    s.add_argument("id")
+    s.add_argument("field")
+    s.add_argument("--value")
+    s.set_defaults(func=cmd_set)
+
+    s = sub.add_parser("unset", help="delete a secret")
+    s.add_argument("id")
+    s.add_argument("field")
+    s.set_defaults(func=cmd_unset)
+
+    s = sub.add_parser("edit", help="edit all secrets of an account in $EDITOR")
+    s.add_argument("id")
+    s.set_defaults(func=cmd_edit)
+
+    s = sub.add_parser("add", help="add an account")
+    s.add_argument("id")
+    s.add_argument("--name", required=True)
+    s.add_argument("--username", required=True)
+    s.add_argument("--url")
+    s.add_argument("--method")
+    s.add_argument("--twofa")
+    s.add_argument("--recovery")
+    s.add_argument("--fields", default="password")
+    s.add_argument("--notes")
+    s.set_defaults(func=cmd_add)
+
+    s = sub.add_parser("rm", help="remove an account and its secrets")
+    s.add_argument("id")
+    s.add_argument("-y", "--yes", action="store_true")
+    s.set_defaults(func=cmd_rm)
+    return p
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
